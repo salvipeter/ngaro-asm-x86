@@ -2,14 +2,18 @@
 ### Ngaro Virtual Machine for 32-bit Linux systems
 ### Peter Salvi, 2011
 
-### Todo:
-### - file operations
 ### - environment variable lookup
 	
 ### Compile with:
 ###   as ngaro.s -o ngaro.o   (add --gstabs for debug info)
 ###   ld ngaro.o -o ngaro
 
+### Tests:
+### - passes core
+### - fails on io_files
+### - passes io_output
+### - passes vocabs
+	
 ### Parameters
 	
 	.equ DATA_STACK_DEPTH, 128
@@ -51,6 +55,8 @@ instr:
 	.long ins_add, ins_subtract, ins_multiply, ins_divmod, ins_and
 	.long ins_or, ins_xor, ins_shl, ins_shr, ins_zero_exit
 	.long ins_inc, ins_dec, ins_in, ins_out, ins_wait
+file_modes:
+	.long 0, 0x41, 0x441, 0x2 # r, create/w, append/create/w, r/w
 	
 ### Code
 
@@ -74,10 +80,10 @@ argc_ok:
 	## Open file
 	movl $5, %eax		# open
 	movl $0, %ecx		# read only
-	movl $0666, %edx	# permissions
+	movl $0644, %edx	# permissions
 	int $0x80
 	testl %eax, %eax
-	jg open_ok
+	jge open_ok
 
 	## Cannot open file
 	leal file_error, %ecx
@@ -358,7 +364,17 @@ ins_divmod:
 	check_data_2
 	movl data-4(,%edi,4), %eax
 	xorl %edx, %edx
+	testl %eax, %eax
+	jl dividend_negative
 	idivl data(,%edi,4)
+	movl %edx, data-4(,%edi,4)
+	movl %eax, data(,%edi,4)
+	ret
+dividend_negative:
+	negl %eax
+	idivl data(,%edi,4)
+	negl %eax
+	negl %edx
 	movl %edx, data-4(,%edi,4)
 	movl %eax, data(,%edi,4)
 	ret
@@ -440,20 +456,22 @@ ins_out:
 
 ins_wait:
 	port_eq 0 no_port 1
+
+port1:	## Input	
 	port_neq 0 port2
 	port_neq 1 port2 1
-	## Input
 	movl $3, %eax		# read
 	movl $0, %ebx		# stdin
 	leal buffer, %ecx	# buffer
 	movl $1, %edx		# count
 	int $0x80
-	movl buffer, %eax
+	xorl %eax, %eax
+	movb buffer, %al
 	set_port 1 %eax
-port2:
+	
+port2:  ## Output
 	port_neq 2 port4 1
 	check_data_1
-	## Output
 	movl $4, %eax		 # write
 	movl $1, %ebx		 # stdout
 	leal data(,%edi,4), %ecx # string
@@ -461,126 +479,201 @@ port2:
 	int $0x80
 	set_port 2 $0
 	decl %edi
-port4:
+
+port4:  ## File operations
 	port_eq 4 port5
+
+port4_1: ## Open file
 	cmpl $-1, %eax
 	jne port4_2
 	check_data_2
-	## Open file
-	subl $2, %edi
+	movl data(,%edi,4), %eax
+	movl file_modes(,%eax,4), %ecx  # open mode
+	decl %edi
+	movl data(,%edi,4), %ebx        # filename
+	movl $5, %eax			# open
+	movl $0644, %edx		# permissions
+	int $0x80
+	testl %eax, %eax
+	jge file_open_ok
+	movl $0, data(,%edi,4)
 	jmp port5
-port4_2:
+file_open_ok:
+	movl %eax, data(,%edi,4)
+	jmp port5
+
+port4_2: ## Read byte
 	cmpl $-2, %eax
 	jne port4_3
 	check_data_1
-	## Read byte
-	decl %edi
+	movl $3, %eax		  # read
+	movl data(,%edi,4), %ebx  # handle
+	leal buffer, %ecx	  # buffer
+	movl $1, %edx		  # count
+	int $0x80
+	testl %eax, %eax
+	jge read_byte_ok
+	movl $0, data(,%edi,4)
 	jmp port5
-port4_3:
+read_byte_ok:
+	xorl %eax, %eax
+	movb buffer, %al
+	movl %eax, data(,%edi,4)
+	jmp port5
+
+port4_3: ## Write byte
 	cmpl $-3, %eax
 	jne port4_4
 	check_data_2
-	## Write byte
-	subl $2, %edi
+	movl $4, %eax		  # write
+	movl data(,%edi,4), %ebx  # handle
+	decl %edi
+	movl data(,%edi,4), %ecx
+	movb %cl, buffer
+	leal buffer, %ecx	  # buffer
+	movl $1, %edx		  # count
+	int $0x80
+	testl %eax, %eax
+	jge write_byte_ok
+	movl $0, data(,%edi,4)
 	jmp port5
-port4_4:
+write_byte_ok:
+	movl $1, data(,%edi,4)
+	jmp port5
+
+port4_4: ## Close file
 	cmpl $-4, %eax
 	jne port4_5
 	check_data_1
-	## Close file
-	decl %edi
+	movl $6, %eax		  # close
+	movl data(,%edi,4), %ebx  # handle
+	int $0x80
+	movl %eax, data(,%edi,4)
 	jmp port5
-port4_5:
+
+port4_5: ## Location in file
 	cmpl $-5, %eax
 	jne port4_6
 	check_data_1
-	## Location in file
-	decl %edi
+	movl $19, %eax		  # lseek
+	movl data(,%edi,4), %ebx  # handle
+	movl $0, %ecx		  # offset
+	movl $1, %edx		  # seek from current position
+	int $0x80
+	movl %eax, data(,%edi,4)
 	jmp port5
-port4_6:
+
+port4_6: ## Seek in file
 	cmpl $-6, %eax
 	jne port4_7
 	check_data_2
-	## Seek in file
-	subl $2, %edi
+	movl data(,%edi,4), %ecx  # offset
+	decl %edi
+	movl $19, %eax		  # lseek
+	movl data(,%edi,4), %ebx  # handle
+	movl $0, %edx		  # seek from the beginning
+	int $0x80
+	movl %eax, data(,%edi,4)
 	jmp port5
-port4_7:
+
+port4_7: ## File size
 	cmpl $-7, %eax
 	jne port4_8
 	check_data_1
-	## File size
-	decl %edi
+	movl $108, %eax		  # fstat
+	movl data(,%edi,4), %ebx  # handle
+	leal stats, %ecx	  # stat record
+	int $0x80
+	testl %eax, %eax
+	jge file_size_ok
+	movl $0, data(,%edi,4)
 	jmp port5
-port4_8:
+file_size_ok:
+	movl stats+20, %eax
+	movl %eax, data(,%edi,4)
+	jmp port5
+
+port4_8: ## Delete file
 	cmpl $-8, %eax
 	jne port5
 	check_data_1
-	## Delete file
-	decl %edi
-port5:
+	movl $10, %eax		  # unlink
+	movl data(,%edi,4), %ebx  # filename
+	int $0x80
+	testl %eax, %eax
+	je delete_file_ok
+	movl $0, data(,%edi,4)
+	jmp port5
+delete_file_ok:
+	movl $-1, data(,%edi,4)
+
+port5:  ## Various features
 	port_eq 5 no_port
+
+port5_1: ## Memory size
 	cmpl $-1, %eax
 	jne port5_5
-	## Memory size
 	set_port 5 $MEMORY_SIZE
 	jmp no_port
-port5_5:
+
+port5_5: ## Data stack size
 	cmpl $-5, %eax
 	jne port5_6
-	## Data stack size
 	movl %edi, %ebx
 	incl %ebx
 	set_port 5 %ebx
 	jmp no_port
-port5_6:
+
+port5_6: ## Return stack size
 	cmpl $-6, %eax
 	jne port5_8
-	## Return stack size
 	movl %esi, %ebx
 	incl %ebx
 	set_port 5 %ebx
 	jmp no_port
-port5_8:
+
+port5_8: ## Current time
 	cmpl $-8, %eax
 	jne port5_9
-	## Current time
 	movl $13, %eax		# time
 	movl $0, %ebx
 	int $0x80
 	set_port 5 %eax
 	jmp no_port
-port5_9:
+
+port5_9: ## Quit
 	cmpl $-9, %eax
 	jne port5_10
-	## Quit
 	popl %eax		# restore stack
 	jmp quit
-port5_10:
+
+port5_10: ## Environment variable search
 	cmpl $-10, %eax
 	jne port5_11
 	check_data_2
-	## Environment variable search
 	subl $2, %edi
 	jmp no_port
-port5_11:
+
+port5_11: ## Window width
 	cmpl $-11, %eax
 	jne port5_12
-	## Window width
 	call get_window_size
 	xorl %eax, %eax
 	movb winsize, %al
 	set_port 5 %eax
 	jmp no_port
-port5_12:
+
+port5_12: ## Window height
 	cmpl $-11, %eax
 	jne port5_end
-	## Window height
 	call get_window_size
 	xorl %eax, %eax
 	movb winsize+1, %al
 	set_port 5 %eax
 	jmp no_port
+
 port5_end:
 	set_port 5 $0
+
 no_port:
 	ret
