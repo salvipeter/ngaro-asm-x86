@@ -2,7 +2,7 @@
 ### Ngaro Virtual Machine for 32-bit Linux systems
 ### Peter Salvi, 2011
 
-### - environment variable lookup
+### TODO: environment variable lookup
 	
 ### Compile with:
 ###   as ngaro.s -o ngaro.o   (add --gstabs for debug info)
@@ -10,7 +10,7 @@
 
 ### Tests:
 ### - passes core
-### - fails on io_files
+### - passes io_files
 ### - passes io_output
 ### - passes vocabs
 	
@@ -19,6 +19,7 @@
 	.equ DATA_STACK_DEPTH, 128
 	.equ RETURN_STACK_DEPTH, 1024
 	.equ MEMORY_SIZE, 1000000
+	.equ MAX_STRING_LENGTH, 1024
 
 ### Allocations
 	
@@ -34,6 +35,7 @@
 	.lcomm return, RETURN_STACK_DEPTH
 	.lcomm ports, 5*4
 	.lcomm memory, MEMORY_SIZE
+	.lcomm str, MAX_STRING_LENGTH
 
 ### Data
 
@@ -56,7 +58,7 @@ instr:
 	.long ins_or, ins_xor, ins_shl, ins_shr, ins_zero_exit
 	.long ins_inc, ins_dec, ins_in, ins_out, ins_wait
 file_modes:
-	.long 0, 0x41, 0x441, 0x2 # r, create/w, append/create/w, r/w
+	.long 0, 01101, 02101, 2 # r, trunc/create/w, append/create/w, r/w
 	
 ### Code
 
@@ -183,6 +185,19 @@ write_str:			# %ecx: string address (1st byte: string length)
 stack_underflow:
 	leal stack_error, %ecx
 	call write_str
+	ret
+
+convert_str:			# stack: string in memory; result in str
+	xorl %eax, %eax
+	movl data(,%edi,4), %ebx
+	xorl %ecx, %ecx
+conversion_loop:
+	movb memory(,%ebx,4), %al
+	movb %al, str(,%ecx,1)
+	incl %ebx
+	incl %ecx
+	testb %al, %al
+	jne conversion_loop
 	ret
 
 get_window_size:
@@ -487,19 +502,21 @@ port4_1: ## Open file
 	cmpl $-1, %eax
 	jne port4_2
 	check_data_2
-	movl data(,%edi,4), %eax
-	movl file_modes(,%eax,4), %ecx  # open mode
+	movl data(,%edi,4), %edx
 	decl %edi
-	movl data(,%edi,4), %ebx        # filename
+	call convert_str
+	movl file_modes(,%edx,4), %ecx  # open mode
+	leal str, %ebx		        # filename
 	movl $5, %eax			# open
 	movl $0644, %edx		# permissions
 	int $0x80
+	decl %edi
 	testl %eax, %eax
 	jge file_open_ok
-	movl $0, data(,%edi,4)
+	set_port 4 $0
 	jmp port5
 file_open_ok:
-	movl %eax, data(,%edi,4)
+	set_port 4 %eax
 	jmp port5
 
 port4_2: ## Read byte
@@ -511,14 +528,15 @@ port4_2: ## Read byte
 	leal buffer, %ecx	  # buffer
 	movl $1, %edx		  # count
 	int $0x80
+	decl %edi
 	testl %eax, %eax
 	jge read_byte_ok
-	movl $0, data(,%edi,4)
+	set_port 4 $0
 	jmp port5
 read_byte_ok:
 	xorl %eax, %eax
 	movb buffer, %al
-	movl %eax, data(,%edi,4)
+	set_port 4 %eax
 	jmp port5
 
 port4_3: ## Write byte
@@ -527,18 +545,18 @@ port4_3: ## Write byte
 	check_data_2
 	movl $4, %eax		  # write
 	movl data(,%edi,4), %ebx  # handle
-	decl %edi
-	movl data(,%edi,4), %ecx
+	movl data-4(,%edi,4), %ecx
 	movb %cl, buffer
 	leal buffer, %ecx	  # buffer
 	movl $1, %edx		  # count
 	int $0x80
+	subl $2, %edi
 	testl %eax, %eax
 	jge write_byte_ok
-	movl $0, data(,%edi,4)
+	set_port 4 $0
 	jmp port5
 write_byte_ok:
-	movl $1, data(,%edi,4)
+	set_port 4 $1
 	jmp port5
 
 port4_4: ## Close file
@@ -548,7 +566,8 @@ port4_4: ## Close file
 	movl $6, %eax		  # close
 	movl data(,%edi,4), %ebx  # handle
 	int $0x80
-	movl %eax, data(,%edi,4)
+	decl %edi
+	set_port 4 %eax
 	jmp port5
 
 port4_5: ## Location in file
@@ -560,20 +579,21 @@ port4_5: ## Location in file
 	movl $0, %ecx		  # offset
 	movl $1, %edx		  # seek from current position
 	int $0x80
-	movl %eax, data(,%edi,4)
+	decl %edi
+	set_port 4 %eax
 	jmp port5
 
 port4_6: ## Seek in file
 	cmpl $-6, %eax
 	jne port4_7
 	check_data_2
-	movl data(,%edi,4), %ecx  # offset
-	decl %edi
-	movl $19, %eax		  # lseek
-	movl data(,%edi,4), %ebx  # handle
-	movl $0, %edx		  # seek from the beginning
+	movl $19, %eax		   # lseek
+	movl data(,%edi,4), %ebx   # handle
+	movl data-4(,%edi,4), %ecx # offset
+	movl $0, %edx		   # seek from the beginning
 	int $0x80
-	movl %eax, data(,%edi,4)
+	subl $2, %edi
+	set_port 4 %eax
 	jmp port5
 
 port4_7: ## File size
@@ -584,28 +604,31 @@ port4_7: ## File size
 	movl data(,%edi,4), %ebx  # handle
 	leal stats, %ecx	  # stat record
 	int $0x80
+	decl %edi
 	testl %eax, %eax
 	jge file_size_ok
-	movl $0, data(,%edi,4)
+	set_port 4 $0
 	jmp port5
 file_size_ok:
 	movl stats+20, %eax
-	movl %eax, data(,%edi,4)
+	set_port 4 %eax
 	jmp port5
 
 port4_8: ## Delete file
 	cmpl $-8, %eax
 	jne port5
 	check_data_1
+	call convert_str
 	movl $10, %eax		  # unlink
-	movl data(,%edi,4), %ebx  # filename
+	leal str, %ebx            # filename
 	int $0x80
+	decl %edi
 	testl %eax, %eax
 	je delete_file_ok
-	movl $0, data(,%edi,4)
+	set_port 4 $0
 	jmp port5
 delete_file_ok:
-	movl $-1, data(,%edi,4)
+	set_port 4 $-1
 
 port5:  ## Various features
 	port_eq 5 no_port
