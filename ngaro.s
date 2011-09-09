@@ -18,6 +18,7 @@
 	.equ RETURN_STACK_DEPTH, 1024
 	.equ MEMORY_SIZE, 1000000
 	.equ MAX_STRING_LENGTH, 1024
+	.equ MAX_OPEN_FILES, 8
 
 ### Allocations
 	
@@ -35,6 +36,7 @@
 	.lcomm ports, 5*4
 	.lcomm memory, MEMORY_SIZE
 	.lcomm str, MAX_STRING_LENGTH
+	.lcomm input, MAX_OPEN_FILES*4
 
 ### Data
 
@@ -58,6 +60,8 @@ instr:
 	.long ins_inc, ins_dec, ins_in, ins_out, ins_wait
 file_modes:
 	.long 0, 01101, 02101, 2 # r, trunc/create/w, append/create/w, r/w
+input_id:
+	.long 0
 	
 ### Code
 
@@ -143,6 +147,8 @@ vm_start:
 	movl $0, %ebp		# ip
 	movl $-1, %edi		# data stack pointer
 	movl $-1, %esi		# return stack pointer
+	movl $0, input		# stdin is the primary input
+	movl $0, input_id	# and it is the default
 vm_loop:
 	cmp $(MEMORY_SIZE/4), %ebp
 	jge vm_start		# restart the VM if ip is out of range
@@ -487,11 +493,27 @@ ins_wait:
 port1:	## Input	
 	port_neq 1 port2 1
 	set_port 0 $0
-	movl $3, %eax		# read
-	movl $0, %ebx		# stdin
-	leal buffer, %ecx	# buffer
-	movl $1, %edx		# count
+input_again:
+	movl $3, %eax		  # read
+	movl input_id, %ecx
+	movl input(,%ecx,4), %ebx # handle
+	leal buffer, %ecx	  # buffer
+	movl $1, %edx		  # count
 	int $0x80
+	testl %eax, %eax
+	jne input_ok
+	movl input_id, %eax
+	testl %eax, %eax
+	je end_of_input
+	movl input(,%eax,4), %ebx # handle
+	movl $6, %eax		  # close
+	int $0x80
+	decl input_id
+	jmp input_again
+end_of_input:
+	popl %eax		# restore stack
+	jmp quit
+input_ok:
 	xorl %eax, %eax
 	movb buffer, %al
 	set_port 1 %eax
@@ -514,14 +536,14 @@ port4:  ## File operations
 
 port4_p1: ## Save image
 	cmpl $1, %eax
-	jne port4_1
+	jne port4_p2
 	movl $5, %eax		# open
 	movl filename, %ebx	# filename
 	movl $01101, %ecx	# mode (trunc/create/w)
 	movl $0644, %edx	# permissions
 	int $0x80
 	testl %eax, %eax
-	je cannot_save
+	jl cannot_save
 	movl %eax, %ebx		# handle
 	movl $4, %eax		# write
 	leal memory, %ecx	# buffer
@@ -531,6 +553,26 @@ port4_p1: ## Save image
 	movl $6, %eax		# close
 	int $0x80
 cannot_save:
+	set_port 4 $0
+	jmp port5
+
+port4_p2: ## Add input source
+	cmpl $2, %eax
+	jne port4_1
+	check_data_1
+	call convert_str
+	decl %edi
+	movl $5, %eax		# open
+	leal str, %ebx  	# filename
+	movl $0, %ecx   	# mode (r)
+	movl $0644, %edx	# permissions
+	int $0x80
+	testl %eax, %eax
+	jl cannot_include
+	incl input_id
+	movl input_id, %ebx
+	movl %eax, input(,%ebx,4)
+cannot_include:
 	set_port 4 $0
 	jmp port5
 
