@@ -2,8 +2,6 @@
 ### Ngaro Virtual Machine for 32-bit Linux systems
 ### Peter Salvi, 2011
 
-### TODO: environment variable lookup
-	
 ### Compile with:
 ###   as ngaro.s -o ngaro.o   (add --gstabs for debug info)
 ###   ld ngaro.o -o ngaro
@@ -191,13 +189,25 @@ convert_str:			# stack: string in memory; result in str
 	xorl %eax, %eax
 	movl data(,%edi,4), %ebx
 	xorl %ecx, %ecx
-conversion_loop:
+convert_loop:
 	movb memory(,%ebx,4), %al
-	movb %al, str(,%ecx,1)
+	movb %al, str(%ecx)
 	incl %ebx
 	incl %ecx
 	testb %al, %al
-	jne conversion_loop
+	jne convert_loop
+	ret
+
+revert_str:     		# stack: destination in memory; source in %ebx
+	xorl %eax, %eax
+	movl data(,%edi,4), %ecx
+revert_loop:
+	movb (%ebx), %al
+	movb %al, memory(,%ecx,4)
+	incl %ebx
+	incl %ecx
+	testb %al, %al
+	jne revert_loop
 	ret
 
 get_window_size:
@@ -674,7 +684,40 @@ port5_10: ## Environment variable search
 	cmpl $-10, %eax
 	jne port5_11
 	check_data_2
-	subl $2, %edi
+	call convert_str
+	decl %edi
+	movl %esp, %edx
+	popl %eax		# return address
+	popl %eax		# NULL (end of command-line arguments)
+env_loop:			# find str in the environment and put in %ebx
+	popl %ebx
+	testl %ebx, %ebx
+	je env_not_found
+	xorl %ecx, %ecx
+compare_loop:			# compare the string at %ebx with str
+	movb str(%ecx), %al
+	testb %al, %al
+	je str_ended
+	cmpb $61, (%ebx)	# '='
+	je env_loop		# premature end of environment variable string
+	cmpb (%ebx), %al
+	jne env_loop		# strings differ
+	incl %ebx
+	incl %ecx
+	jmp compare_loop
+str_ended:
+	cmpb $61, (%ebx)	# '='
+	jne env_loop		# premature end of str
+	incl %ebx
+	call revert_str
+	jmp env_end
+env_not_found:
+	movl data(,%edi,4), %ecx
+ 	movb $0, memory(,%ecx,4)
+env_end:
+	movl %edx, %esp
+	decl %edi
+	set_port 5 $0
 	jmp no_port
 
 port5_11: ## Window width
