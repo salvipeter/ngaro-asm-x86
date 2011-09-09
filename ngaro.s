@@ -27,7 +27,8 @@
 	.lcomm termios_old, 36	# see asm-generic/termbits.h
 	.lcomm termios, 36
 	.lcomm buffer, 1
-	.lcomm winsize, 4	# see asm-generic/termios.h
+	.lcomm winsize, 8	# see asm-generic/termios.h
+	.lcomm filename, 4
 	
 	.lcomm data, DATA_STACK_DEPTH
 	.lcomm return, RETURN_STACK_DEPTH
@@ -63,6 +64,13 @@ file_modes:
 	.section .text
 	.globl _start
 _start:
+	## Save the original IO settings
+	movl $54, %eax		# ioctl
+	movl $0, %ebx		# stdin
+	movl $0x5401, %ecx	# tcgets request
+	leal termios_old, %edx	# save original termios struct
+	int $0x80
+
 	## Check command line arguments
 	popl %eax
 	cmpl $2, %eax
@@ -76,6 +84,7 @@ _start:
 argc_ok:
 	popl %eax		# program name
 	popl %ebx		# image file name
+	movl %ebx, filename
 
 	## Open file
 	movl $5, %eax		# open
@@ -110,14 +119,7 @@ open_ok:
 
 ### Enter non-canonical mode (do not wait for enter, no echo)
 
-	## Get the original IO settings
-	movl $54, %eax		# ioctl
-	movl $0, %ebx		# stdin
-	movl $0x5401, %ecx	# tcgets request
-	leal termios_old, %edx	# save original termios struct
-	int $0x80
-
-	## Get it once again for modification
+	## Get IO settings for modification
 	movl $54, %eax		# ioctl
 	movl $0, %ebx		# stdin
 	movl $0x5401, %ecx	# tcgets request
@@ -472,19 +474,19 @@ ins_in:
 ins_out:
 	check_data_2
 	movl data(,%edi,4), %eax
-
 	decl %edi
 	movl data(,%edi,4), %ebx
 	decl %edi
 	movl %ebx, ports(,%eax,4)
+	set_port 0 $0
 	ret
 
 ins_wait:
-	port_eq 0 no_port 1
+	port_neq 0 no_port
 
 port1:	## Input	
-	port_neq 0 port2
 	port_neq 1 port2 1
+	set_port 0 $0
 	movl $3, %eax		# read
 	movl $0, %ebx		# stdin
 	leal buffer, %ecx	# buffer
@@ -496,6 +498,7 @@ port1:	## Input
 	
 port2:  ## Output
 	port_neq 2 port4 1
+	set_port 0 $0
 	check_data_1
 	movl $4, %eax		 # write
 	movl $1, %ebx		 # stdout
@@ -507,6 +510,29 @@ port2:  ## Output
 
 port4:  ## File operations
 	port_eq 4 port5
+	set_port 0 $0
+
+port4_p1: ## Save image
+	cmpl $1, %eax
+	jne port4_1
+	movl $5, %eax		# open
+	movl filename, %ebx	# filename
+	movl $01101, %ecx	# mode (trunc/create/w)
+	movl $0644, %edx	# permissions
+	int $0x80
+	testl %eax, %eax
+	je cannot_save
+	movl %eax, %ebx		# handle
+	movl $4, %eax		# write
+	leal memory, %ecx	# buffer
+	movl memory+12, %edx	# count
+	shll $2, %edx		# count
+	int $0x80
+	movl $6, %eax		# close
+	int $0x80
+cannot_save:
+	set_port 4 $0
+	jmp port5
 
 port4_1: ## Open file
 	cmpl $-1, %eax
@@ -642,6 +668,7 @@ delete_file_ok:
 
 port5:  ## Various features
 	port_eq 5 no_port
+	set_port 0 $0
 
 port5_1: ## Memory size
 	cmpl $-1, %eax
@@ -725,7 +752,7 @@ port5_11: ## Window width
 	jne port5_12
 	call get_window_size
 	xorl %eax, %eax
-	movb winsize, %al
+	movw winsize, %ax
 	set_port 5 %eax
 	jmp no_port
 
@@ -734,7 +761,7 @@ port5_12: ## Window height
 	jne port5_end
 	call get_window_size
 	xorl %eax, %eax
-	movb winsize+1, %al
+	movw winsize+2, %ax
 	set_port 5 %eax
 	jmp no_port
 
