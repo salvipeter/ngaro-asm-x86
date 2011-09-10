@@ -51,6 +51,9 @@ file_error:
 stack_error:
 	.byte 16
 	.ascii "Stack underflow\n"
+clear_screen:
+	.byte 10
+	.ascii "\033[2J\033[1;1H"
 instr:
 	.long ins_nop, ins_lit, ins_dup, ins_drop, ins_swap, ins_push
 	.long ins_pop, ins_loop, ins_jump, ins_return, ins_lt_jump
@@ -522,11 +525,18 @@ port2:  ## Output
 	port_neq 2 port4 1
 	set_port 0 $0
 	check_data_1
+	cmpl $0, data(,%edi,4)
+	jge port2_char
+	leal clear_screen, %ecx
+	call write_str
+	jmp port2_done
+port2_char:
 	movl $4, %eax		 # write
 	movl $1, %ebx		 # stdout
 	leal data(,%edi,4), %ecx # string
 	movl $1, %edx
 	int $0x80
+port2_done:
 	set_port 2 $0
 	decl %edi
 
