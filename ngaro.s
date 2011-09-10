@@ -31,10 +31,10 @@
 	.lcomm winsize, 8	# see asm-generic/termios.h
 	.lcomm filename, 4
 	
-	.lcomm data, DATA_STACK_DEPTH
-	.lcomm return, RETURN_STACK_DEPTH
+	.lcomm data, DATA_STACK_DEPTH*4
+	.lcomm return, RETURN_STACK_DEPTH*4
 	.lcomm ports, 5*4
-	.lcomm memory, MEMORY_SIZE
+	.lcomm memory, MEMORY_SIZE*4
 	.lcomm str, MAX_STRING_LENGTH
 	.lcomm input, MAX_OPEN_FILES*4
 
