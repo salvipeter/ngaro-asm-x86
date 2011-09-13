@@ -42,11 +42,12 @@
 
 	.section .data
 
-image_name:
+arg_error:
+	.byte 21
+	.ascii "Usage: ngaro [image]\n"
+default_image:
 	.ascii "retroImage"
 	.byte 0
-default_image:
-	.long image_name
 file_error:
 	.byte 23
 	.ascii "Cannot open image file\n"
@@ -82,16 +83,23 @@ _start:
 
 	## Check command line arguments
 	popl %eax
+	cmpl $1, %eax
+	je argc_1
 	cmpl $2, %eax
-	je argc_ok
+	je argc_2
 
+	## Wrong number of arguments
+	leal arg_error, %ecx
+	call write_str
+	jmp quit
+
+argc_1:
 	## No image specified; try to load 'retroImage'
-	popl %eax		# program name
-	pushl default_image
-	popl %ebx
+	popl %eax		# maintain stack consistence
+	leal default_image, %ebx
 	jmp open_image
 
-argc_ok:
+argc_2:
 	popl %eax		# program name
 	popl %ebx		# image file name
 	movl %ebx, filename
